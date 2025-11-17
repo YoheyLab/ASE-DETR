@@ -1,0 +1,64 @@
+# Ultralytics YOLO 🚀, AGPL-3.0 license
+# RT-DETR-l object detection model with P3-P5 outputs. For details see https://docs.ultralytics.com/models/rtdetr
+
+# Parameters
+nc: 80  # number of classes
+scales: # model compound scaling constants, i.e. 'model=yolov8n-cls.yaml' will call yolov8-cls.yaml with scale 'n'
+  # [depth, width, max_channels]
+  l: [1.00, 1.00, 1024]
+fusion_mode: bifpn
+node_mode: RepC3
+head_channel: 128
+
+
+backbone:
+  # [from, repeats, module, args]
+  - [-1, 1, ConvNormLayer, [32, 3, 2, None, False, 'relu']] # 0-P1/2
+  - [-1, 1, ConvNormLayer, [32, 3, 1, None, False, 'relu']] # 1
+  - [-1, 1, ConvNormLayer, [64, 3, 1, None, False, 'relu']] # 2
+  - [-1, 1, nn.MaxPool2d, [3, 2, 1]] # 3-P2/4
+
+  - [-1, 1, MSIG, [[64, 128, 256]]] # 4
+  - [4, 1, GetIndexOutput, [0]] # 5-P3/8
+  - [4, 1, GetIndexOutput, [1]] # 6-P4/16
+  - [4, 1, GetIndexOutput, [2]] # 7-P5/32
+  
+  # [ch_out, block_type, block_nums, stage_num, act, variant]
+  - [3, 1, Blocks, [64, BasicBlock, 2, 2, 'relu']] # 8
+  - [-1, 1, Blocks, [128, BasicBlock, 2, 3, 'relu']] # 9-P3/8
+  - [[5, -1], 1, EdgeFusion, [128]] # 10-P3/8
+  - [-1, 1, Blocks, [256, BasicBlock, 2, 4, 'relu']] # 11-P4/16
+  - [[6, -1], 1, EdgeFusion, [256]] # 12-P4/16
+  - [-1, 1, Blocks, [512, BasicBlock, 2, 5, 'relu']] # 13-P5/32
+  - [[7, -1], 1, EdgeFusion, [512]] # 14-P5/32
+
+head:
+  - [-1, 1, Conv, [256, 1, 1, None, 1, 1, False]]  # 15 input_proj.2
+  - [-1, 1, ASAEL, [1024, 8]] # 16
+  - [-1, 1, Conv, [256, 1, 1]]  # 17, Y5, lateral_convs.0
+
+  - [10, 1, GLSA, [head_channel]]  # 18-P3/8
+  - [12, 1, GLSA, [head_channel]]  # 19-P4/16
+  - [17, 1, GLSA, [head_channel]]  # 20-P5/32
+
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']] # 21 P5->P4
+  - [[-1, 19], 1, Fusion, [fusion_mode]] # 22
+  - [-1, 3, node_mode, [head_channel, 0.5]] # 23-P4/16
+  
+  - [-1, 1, nn.Upsample, [None, 2, 'nearest']] # 24 P4->P3
+  - [[-1, 18], 1, Fusion, [fusion_mode]] # 25
+  - [-1, 3, node_mode, [head_channel, 0.5]] # 26-P3/8
+
+  - [8, 1, Conv, [head_channel, 3, 2]] # 27 P2->P3
+  - [[-1, 18, 26], 1, Fusion, [fusion_mode]] # 28
+  - [-1, 3, node_mode, [head_channel, 0.5]] # 29-P3/8
+
+  - [-1, 1, Conv, [head_channel, 3, 2]] # 30 P3->P4
+  - [[-1, 19, 23], 1, Fusion, [fusion_mode]] # 31
+  - [-1, 3, node_mode, [head_channel, 0.5]] # 32-P4/16
+
+  - [-1, 1, Conv, [head_channel, 3, 2]] # 33 P4->P5
+  - [[-1, 20], 1, Fusion, [fusion_mode]] # 34
+  - [-1, 3, node_mode, [head_channel, 0.5]] # 35-P5/32
+
+  - [[29, 32, 35], 1, RTDETRDecoder, [nc, 256, 300, 4, 8, 3]]  # Detect(P3, P4, P5)
